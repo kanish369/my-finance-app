@@ -14,12 +14,12 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- DATABASE SETUP WITH AUTO-REPAIR ---
+# --- BULLETPROOF DATABASE INITIALIZER ---
 def init_db():
     conn = sqlite3.connect('finance.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    # Create tables if they don't exist
+    # Force table creation cleanly
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,17 +53,18 @@ def init_db():
 conn = init_db()
 cursor = conn.cursor()
 
-# --- SAFE PROFILE & SETTINGS VERIFICATION ---
+# --- ENSURE DEFAULT PROFILE ALWAYS EXISTS ---
 try:
     cursor.execute("SELECT COUNT(*) FROM profiles")
-    if cursor.fetchone()[0] == 0:
+    count = cursor.fetchone()[0]
+    if count == 0:
         cursor.execute("INSERT INTO profiles (name) VALUES (?)", ("Default Profile",))
         conn.commit()
         default_id = cursor.lastrowid
         cursor.execute("INSERT INTO settings (profile_id, monthly_income, savings_limit) VALUES (?, ?, ?)", (default_id, 0.0, 5000.0))
         conn.commit()
-except sqlite3.OperationalError:
-    # If table schema changed, drop and recreate safely
+except Exception:
+    # Fallback safety reset if any schema mismatch occurs
     cursor.execute("DROP TABLE IF EXISTS settings")
     cursor.execute("DROP TABLE IF EXISTS expenses")
     cursor.execute("DROP TABLE IF EXISTS profiles")
@@ -88,7 +89,7 @@ profiles = [row[0] for row in cursor.fetchall()]
 st.sidebar.header("👤 Profile Switcher")
 selected_profile = st.sidebar.selectbox("Choose Profile", profiles)
 
-# Get selected profile ID
+# Get selected profile ID safely
 cursor.execute("SELECT id FROM profiles WHERE name = ?", (selected_profile,))
 profile_id_row = cursor.fetchone()
 profile_id = profile_id_row[0] if profile_id_row else 1
