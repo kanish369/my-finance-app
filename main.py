@@ -14,12 +14,12 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- DATABASE SETUP ---
+# --- DATABASE SETUP WITH AUTO-REPAIR ---
 def init_db():
     conn = sqlite3.connect('finance.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    # Profiles table
+    # Create tables if they don't exist
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +27,6 @@ def init_db():
         )
     ''')
     
-    # Expenses table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +39,6 @@ def init_db():
         )
     ''')
     
-    # Budgets & Settings table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             profile_id INTEGER PRIMARY KEY,
@@ -55,9 +53,23 @@ def init_db():
 conn = init_db()
 cursor = conn.cursor()
 
-# --- AUTO-CREATE DEFAULT PROFILE IF EMPTY ---
-cursor.execute("SELECT COUNT(*) FROM profiles")
-if cursor.fetchone()[0] == 0:
+# --- SAFE PROFILE & SETTINGS VERIFICATION ---
+try:
+    cursor.execute("SELECT COUNT(*) FROM profiles")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO profiles (name) VALUES (?)", ("Default Profile",))
+        conn.commit()
+        default_id = cursor.lastrowid
+        cursor.execute("INSERT INTO settings (profile_id, monthly_income, savings_limit) VALUES (?, ?, ?)", (default_id, 0.0, 5000.0))
+        conn.commit()
+except sqlite3.OperationalError:
+    # If table schema changed, drop and recreate safely
+    cursor.execute("DROP TABLE IF EXISTS settings")
+    cursor.execute("DROP TABLE IF EXISTS expenses")
+    cursor.execute("DROP TABLE IF EXISTS profiles")
+    conn.commit()
+    conn = init_db()
+    cursor = conn.cursor()
     cursor.execute("INSERT INTO profiles (name) VALUES (?)", ("Default Profile",))
     conn.commit()
     default_id = cursor.lastrowid
