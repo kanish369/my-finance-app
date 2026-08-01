@@ -48,13 +48,20 @@ def init_db():
         )
     ''')
     
-    # Budget table linked to profile
+    # Budget table linked to profile (added savings_warning_limit)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS budget (
             username TEXT PRIMARY KEY,
-            amount REAL NOT NULL
+            amount REAL NOT NULL,
+            savings_warning_limit REAL DEFAULT 5000.0
         )
     ''')
+    
+    # Migration check for existing databases lacking savings_warning_limit
+    try:
+        cursor.execute("SELECT savings_warning_limit FROM budget LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE budget ADD COLUMN savings_warning_limit REAL DEFAULT 5000.0")
     
     # Monthly archives linked to profile
     cursor.execute('''
@@ -89,7 +96,7 @@ def create_profile(username, password, default_theme):
     try:
         cursor.execute("INSERT INTO profiles (username, password_hash, default_theme) VALUES (?, ?, ?)",
                        (username, hash_password(password), default_theme))
-        cursor.execute("INSERT INTO budget (username, amount) VALUES (?, ?)", (username, 20000.0))
+        cursor.execute("INSERT INTO budget (username, amount, savings_warning_limit) VALUES (?, ?, ?)", (username, 20000.0, 5000.0))
         conn.commit()
         success = True
     except sqlite3.IntegrityError:
@@ -104,18 +111,20 @@ def update_default_theme(username, theme):
     conn.commit()
     conn.close()
 
-def get_budget(username):
+def get_budget_settings(username):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT amount FROM budget WHERE username = ?", (username,))
+    cursor.execute("SELECT amount, savings_warning_limit FROM budget WHERE username = ?", (username,))
     res = cursor.fetchone()
     conn.close()
-    return res[0] if res else 20000.0
+    if res:
+        return res[0], (res[1] if res[1] is not None else 5000.0)
+    return 20000.0, 5000.0
 
-def update_budget(username, new_amount):
+def update_budget_settings(username, new_amount, new_warning_limit):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO budget (username, amount) VALUES (?, ?)", (username, new_amount))
+    cursor.execute("INSERT OR REPLACE INTO budget (username, amount, savings_warning_limit) VALUES (?, ?, ?)", (username, new_amount, new_warning_limit))
     conn.commit()
     conn.close()
 
@@ -364,7 +373,7 @@ if "Coral Peach" in theme_choice:
     input_bg = "#FFFFFF"
     input_text = "#3D2314"
     banner_bg = "#E87A5D"
-    banner_title_color = "#FFFFFF"  # White title text as requested
+    banner_title_color = "#FFFFFF"
 
 elif "Night Theme" in theme_choice:
     bg_color = "#18181B"
@@ -395,8 +404,8 @@ else:  # Light Slate (Slate Blue look)
     btn_text = "#FFFFFF"
     input_bg = "#FFFFFF"
     input_text = "#0F172A"
-    banner_bg = "#1E3A8A"       # Deep Slate Blue banner
-    banner_title_color = "#FFFFFF"  # White title text as requested
+    banner_bg = "#1E3A8A"
+    banner_title_color = "#FFFFFF"
 
 st.markdown(f"""
     <style>
@@ -546,23 +555,50 @@ if menu == "Overview 🌿":
     st.caption("🍵 *Keep track of your peaceful flow of income, savings & expenses*")
     st.write("")
 
-    current_budget = get_budget(current_user)
+    current_budget, savings_warning_limit = get_budget_settings(current_user)
     expenses = get_expenses(current_user)
     
     total_spent = sum(e[2] for e in expenses)
     remaining_balance = current_budget - total_spent
     total_accumulated_savings = get_total_accumulated_savings(current_user)
 
-    # Persistent Low Savings Banner on the page (Automatic trigger when < 5000)
-    if remaining_balance < 5000.0:
-        st.markdown(f"""
-            <div class="warning-banner">
-                <h3>⚠️ Low Savings Alert</h3>
-                <p>
-                    Your current month savings have dropped to <b>₹{remaining_balance:,.2f}</b>, which is below your target threshold of <b>₹5,000</b>. Consider reviewing your recent expenses to maintain your financial goals! 🌸
-                </p>
-            </div>
-        """, unsafe_allow_html=True)
+    # --- SMART WARNING & ENCOURAGEMENT SYSTEM ---
+    is_tight_budget = current_budget > 0 and current_budget < 5000.0
+
+    if "dismiss_banner" not in st.session_state:
+        st.session_state.dismiss_banner = False
+
+    if is_tight_budget:
+        # Tight budget encouragement banner
+        if not st.session_state.dismiss_banner:
+            b_col1, b_col2 = st.columns([9, 1])
+            with b_col1:
+                st.info(
+                    "✨ **I know already your budget is tight, spend wisely and save for later!** "
+                    "Every single penny saved builds your path to financial freedom. You've got this! 💪",
+                    icon="🌟"
+                )
+            with b_col2:
+                if st.button("❌", help="Dismiss reminder"):
+                    st.session_state.dismiss_banner = True
+                    st.rerun()
+
+        # Warning when savings fall below custom threshold for tight budget users
+        if savings_warning_limit > 0 and remaining_balance <= savings_warning_limit:
+            st.warning(f"🚨 **Alert:** Your savings have dropped below your custom warning threshold of **₹{savings_warning_limit:,.2f}**!", icon="⚠️")
+
+    else:
+        # Standard budget behavior
+        effective_limit = savings_warning_limit if savings_warning_limit > 0 else 5000.0
+        
+        # Warning when savings are close to limit (within 1000 above limit)
+        if remaining_balance <= (effective_limit + 1000) and remaining_balance > effective_limit:
+            st.warning(f"⚠️ **Spend Carefully:** Your savings (₹{remaining_balance:,.2f}) are getting close to your warning limit (₹{effective_limit:,.2f})!", icon="🟡")
+        
+        # Warning when savings drop below limit
+        elif remaining_balance <= effective_limit:
+            st.warning(f"🚨 **Warning:** Your savings have dropped below your safety limit of ₹{effective_limit:,.2f}!", icon="🔴")
+
 
     # Metric Dashboard Layout
     c1, c2, c3, c4 = st.columns(4)
@@ -747,7 +783,7 @@ elif menu == "Monthly Archives & PDF 📑":
     with col_p1:
         st.subheader("📄 Export Active Month PDF")
         expenses = get_expenses(current_user)
-        curr_budget = get_budget(current_user)
+        curr_budget, _ = get_budget_settings(current_user)
         curr_spent = sum(e[2] for e in expenses)
         curr_savings = curr_budget - curr_spent
         
@@ -776,14 +812,14 @@ elif menu == "Monthly Archives & PDF 📑":
 # ---------------------------------------------------------
 elif menu == "Budget & Categories 🕯️":
     st.title("🕯️ Workspace Settings")
-    st.caption("🌿 *Adjust your budget target and expense categories*")
+    st.caption("🌿 *Adjust your budget target, savings warning limit, and expense categories*")
     st.write("")
 
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.subheader("☁️ Monthly Target Allocation")
-        current_budget = get_budget(current_user)
+        st.subheader("☁️ Monthly Target & Savings Warning")
+        current_budget, current_warning_limit = get_budget_settings(current_user)
         
         new_budget = st.number_input(
             "Monthly Target (₹)", 
@@ -791,9 +827,19 @@ elif menu == "Budget & Categories 🕯️":
             min_value=0.0, 
             step=500.0
         )
-        if st.button("💾 Update Monthly Target"):
-            update_budget(current_user, new_budget)
-            st.success("🌷 Budget target updated!")
+        
+        new_warning_limit = st.number_input(
+            "Savings Warning Limit (₹)", 
+            value=float(current_warning_limit), 
+            min_value=0.0, 
+            step=100.0,
+            help="Set your customized threshold for low savings warnings."
+        )
+
+        if st.button("💾 Update Budget & Limits"):
+            update_budget_settings(current_user, new_budget, new_warning_limit)
+            st.success("🌷 Budget and savings warning limit updated successfully!")
+            st.rerun()
 
     with col_b:
         st.subheader("🪴 Manage Categories")
