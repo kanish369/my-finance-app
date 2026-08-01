@@ -14,12 +14,12 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- BULLETPROOF DATABASE INITIALIZER ---
+# --- DATABASE SETUP WITH AUTO-REPAIR ---
 def init_db():
     conn = sqlite3.connect('finance.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    # Force table creation cleanly
+    # Profiles table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +27,7 @@ def init_db():
         )
     ''')
     
+    # Expenses table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,6 +40,7 @@ def init_db():
         )
     ''')
     
+    # Budgets & Settings table (stores custom savings warning limit per profile)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             profile_id INTEGER PRIMARY KEY,
@@ -53,18 +55,16 @@ def init_db():
 conn = init_db()
 cursor = conn.cursor()
 
-# --- ENSURE DEFAULT PROFILE ALWAYS EXISTS ---
+# --- ENSURE DEFAULT PROFILE & SETTINGS EXIST ---
 try:
     cursor.execute("SELECT COUNT(*) FROM profiles")
-    count = cursor.fetchone()[0]
-    if count == 0:
+    if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO profiles (name) VALUES (?)", ("Default Profile",))
         conn.commit()
         default_id = cursor.lastrowid
         cursor.execute("INSERT INTO settings (profile_id, monthly_income, savings_limit) VALUES (?, ?, ?)", (default_id, 0.0, 5000.0))
         conn.commit()
-except Exception:
-    # Fallback safety reset if any schema mismatch occurs
+except sqlite3.OperationalError:
     cursor.execute("DROP TABLE IF EXISTS settings")
     cursor.execute("DROP TABLE IF EXISTS expenses")
     cursor.execute("DROP TABLE IF EXISTS profiles")
@@ -81,12 +81,10 @@ except Exception:
 st.title("💰 Smart Personal Finance & Budget Tracker")
 st.markdown("Manage your multi-profile budgets, track expenses, generate reports, and build secure savings habits!")
 
-# --- PROFILE MANAGEMENT ---
+# --- SIDEBAR: PROFILE MANAGEMENT & SWITCHER ---
+st.sidebar.header("👤 Profile Switcher")
 cursor.execute("SELECT name FROM profiles")
 profiles = [row[0] for row in cursor.fetchall()]
-
-# Sidebar Profile Selector
-st.sidebar.header("👤 Profile Switcher")
 selected_profile = st.sidebar.selectbox("Choose Profile", profiles)
 
 # Get selected profile ID safely
@@ -94,7 +92,7 @@ cursor.execute("SELECT id FROM profiles WHERE name = ?", (selected_profile,))
 profile_id_row = cursor.fetchone()
 profile_id = profile_id_row[0] if profile_id_row else 1
 
-# Sidebar actions for profiles
+# Sidebar expander for adding new profiles
 with st.sidebar.expander("Manage Profiles"):
     add_name = st.text_input("New Profile Name")
     if st.button("Add Profile"):
@@ -106,8 +104,10 @@ with st.sidebar.expander("Manage Profiles"):
                 conn.commit()
                 st.success(f"Added {add_name}!")
                 st.rerun()
-            except:
-                st.error("Already exists.")
+            except sqlite3.IntegrityError:
+                st.error("Profile name already exists.")
+        else:
+            st.error("Please enter a valid name.")
 
 # --- FETCH PROFILE SETTINGS ---
 cursor.execute("SELECT monthly_income, savings_limit FROM settings WHERE profile_id = ?", (profile_id,))
@@ -133,9 +133,10 @@ current_savings = monthly_income - total_spent
 # ==========================================
 st.subheader("💡 Financial Health & Savings Watcher")
 
+# Allow user to configure custom savings warning limit
 with st.expander("⚙️ Configure Custom Savings Warning Limit"):
     new_limit = st.number_input(
-        "Set your customized savings warning limit (Default is 5000):",
+        "Set your customized savings warning limit:",
         min_value=0.0,
         value=float(savings_limit),
         step=100.0
@@ -146,13 +147,15 @@ with st.expander("⚙️ Configure Custom Savings Warning Limit"):
         st.success("Savings limit updated successfully!")
         st.rerun()
 
-effective_limit = savings_limit if savings_limit > 0 else 5000.0
 is_tight_budget = monthly_income > 0 and monthly_income < 5000.0
 
+# Dismissible Banner State for tight budgets
 if "dismiss_banner" not in st.session_state:
     st.session_state.dismiss_banner = False
 
+# Condition 1: For budgets below 5000 (Tight Budget)
 if is_tight_budget:
+    # Show encouraging message with dismissible 'X' button
     if not st.session_state.dismiss_banner:
         b_col1, b_col2 = st.columns([9, 1])
         with b_col1:
@@ -166,13 +169,22 @@ if is_tight_budget:
                 st.session_state.dismiss_banner = True
                 st.rerun()
 
-    if current_savings <= effective_limit:
-        st.warning(f"🚨 **Alert:** Your savings have dropped below your custom warning threshold of {effective_limit}!", icon="⚠️")
+    # Only warn if savings go below their custom input limit (don't force default 5000 warning)
+    if savings_limit > 0 and current_savings <= savings_limit:
+        st.warning(f"🚨 **Alert:** Your savings have dropped below your custom warning threshold of {savings_limit:.2f}!", icon="⚠️")
+
+# Condition 2: Standard Budgets (>= 5000 or income not set yet)
 else:
+    effective_limit = savings_limit if savings_limit > 0 else 5000.0
+    
+    # Warning when savings are close to limit (within 1000 above limit)
     if current_savings <= (effective_limit + 1000) and current_savings > effective_limit:
-        st.warning(f"⚠️ **Spend Carefully:** Your savings ({current_savings:.2f}) are getting close to your warning limit ({effective_limit})!", icon="🟡")
+        st.warning(f"⚠️ **Spend Carefully:** Your savings ({current_savings:,.2f}) are getting close to your warning limit ({effective_limit:,.2f})!", icon="🟡")
+    
+    # Warning when savings drop below limit
     elif current_savings <= effective_limit:
-        st.warning(f"🚨 **Warning:** Your savings have dropped below your safety limit of {effective_limit}!", icon="🔴")
+        st.warning(f"🚨 **Warning:** Your savings have dropped below your safety limit of {effective_limit:,.2f}!", icon="🔴")
+
 
 # --- MAIN APP TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "➕ Add Expense", "⚙️ Budget Setup", "📄 Reports"])
