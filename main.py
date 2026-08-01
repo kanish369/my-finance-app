@@ -40,7 +40,7 @@ def init_db():
         )
     ''')
     
-    # Budgets & Settings table (stores custom savings warning limit per profile)
+    # Budgets & Settings table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             profile_id INTEGER PRIMARY KEY,
@@ -55,6 +55,15 @@ def init_db():
 conn = init_db()
 cursor = conn.cursor()
 
+# --- AUTO-CREATE DEFAULT PROFILE IF EMPTY ---
+cursor.execute("SELECT COUNT(*) FROM profiles")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO profiles (name) VALUES (?)", ("Default Profile",))
+    conn.commit()
+    default_id = cursor.lastrowid
+    cursor.execute("INSERT INTO settings (profile_id, monthly_income, savings_limit) VALUES (?, ?, ?)", (default_id, 0.0, 5000.0))
+    conn.commit()
+
 # --- APP HEADER ---
 st.title("💰 Smart Personal Finance & Budget Tracker")
 st.markdown("Manage your multi-profile budgets, track expenses, generate reports, and build secure savings habits!")
@@ -63,37 +72,14 @@ st.markdown("Manage your multi-profile budgets, track expenses, generate reports
 cursor.execute("SELECT name FROM profiles")
 profiles = [row[0] for row in cursor.fetchall()]
 
-if not profiles:
-    st.info("No profiles found. Let's create your first profile to get started!")
-    new_profile_name = st.text_input("Enter Profile Name:")
-    if st.button("Create Profile"):
-        if new_profile_name.strip():
-            try:
-                cursor.execute("INSERT INTO profiles (name) VALUES (?)", (new_profile_name.strip(),))
-                cursor.execute("INSERT INTO settings (profile_id, monthly_income, savings_limit) VALUES (?, ?, ?)", 
-                               (cursor.lastrowid, 0.0, 5000.0))
-                conn.commit()
-                st.success(f"Profile '{new_profile_name}' created successfully! Please refresh.")
-                st.rerun()
-            except sqlite3.IntegrityError:
-                st.error("Profile name already exists.")
-        else:
-            st.error("Please enter a valid name.")
-    st.stop()
-
 # Sidebar Profile Selector
 st.sidebar.header("👤 Profile Switcher")
 selected_profile = st.sidebar.selectbox("Choose Profile", profiles)
 
 # Get selected profile ID
-cursor.execute("id FROM profiles WHERE name = ?", (selected_profile,))
+cursor.execute("SELECT id FROM profiles WHERE name = ?", (selected_profile,))
 profile_id_row = cursor.fetchone()
-if not profile_id_row:
-    # Fallback/Safe Handling
-    cursor.execute("SELECT id FROM profiles WHERE name = ?", (selected_profile,))
-    profile_id = cursor.fetchone()[0]
-else:
-    profile_id = profile_id_row[0]
+profile_id = profile_id_row[0] if profile_id_row else 1
 
 # Sidebar actions for profiles
 with st.sidebar.expander("Manage Profiles"):
@@ -134,7 +120,6 @@ current_savings = monthly_income - total_spent
 # ==========================================
 st.subheader("💡 Financial Health & Savings Watcher")
 
-# Allow user to configure custom savings warning limit
 with st.expander("⚙️ Configure Custom Savings Warning Limit"):
     new_limit = st.number_input(
         "Set your customized savings warning limit (Default is 5000):",
@@ -151,11 +136,9 @@ with st.expander("⚙️ Configure Custom Savings Warning Limit"):
 effective_limit = savings_limit if savings_limit > 0 else 5000.0
 is_tight_budget = monthly_income > 0 and monthly_income < 5000.0
 
-# Dismissible Banner State
 if "dismiss_banner" not in st.session_state:
     st.session_state.dismiss_banner = False
 
-# Condition A: If the total overall monthly budget itself is tight/low (< 5000)
 if is_tight_budget:
     if not st.session_state.dismiss_banner:
         b_col1, b_col2 = st.columns([9, 1])
@@ -170,20 +153,13 @@ if is_tight_budget:
                 st.session_state.dismiss_banner = True
                 st.rerun()
 
-    # Custom Warning check for tight budgets based on their set custom threshold (e.g. 100 or 50)
     if current_savings <= effective_limit:
         st.warning(f"🚨 **Alert:** Your savings have dropped below your custom warning threshold of {effective_limit}!", icon="⚠️")
-
-# Condition B: Standard Budgets (>= 5000 or no income specified yet)
 else:
-    # 1. Close warning threshold buffer (1000 more than limit)
     if current_savings <= (effective_limit + 1000) and current_savings > effective_limit:
         st.warning(f"⚠️ **Spend Carefully:** Your savings ({current_savings:.2f}) are getting close to your warning limit ({effective_limit})!", icon="🟡")
-    
-    # 2. Critical warning when savings go below limit
     elif current_savings <= effective_limit:
         st.warning(f"🚨 **Warning:** Your savings have dropped below your safety limit of {effective_limit}!", icon="🔴")
-
 
 # --- MAIN APP TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "➕ Add Expense", "⚙️ Budget Setup", "📄 Reports"])
@@ -201,8 +177,7 @@ with tab1:
     if not df_expenses.empty:
         st.dataframe(df_expenses[['date', 'category', 'amount', 'note']], use_container_width=True)
     else:
-        info_text = "No expenses recorded yet. Use the 'Add Expense' tab to add your first transaction!"
-        st.info(info_text)
+        st.info("No expenses recorded yet. Use the 'Add Expense' tab to add your first transaction!")
 
 with tab2:
     st.header("Add New Expense")
